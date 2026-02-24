@@ -35,19 +35,19 @@ TRADING_DAYS_PER_YEAR = 252
 # Stock Definitions
 # ─────────────────────────────────────────────
 STOCK_DEFINITIONS = [
-    # (ticker, name, initial_price, volatility, drift)
+    # (ticker, name, initial_price, volatility, drift, sector, industry)
     # volatility = daily std dev as fraction of price
     # drift = slight daily bias (positive = bullish)
-    ("AAPL", "Apple Inc.", 182.50, 0.018, 0.0005),
-    ("MSFT", "Microsoft Corp.", 378.90, 0.016, 0.0006),
-    ("GOOG", "Alphabet Inc.", 141.20, 0.020, 0.0004),
-    ("AMZN", "Amazon.com Inc.", 178.30, 0.022, 0.0003),
-    ("TSLA", "Tesla Inc.", 248.40, 0.035, 0.0001),
-    ("JPM", "JPMorgan Chase", 196.70, 0.014, 0.0004),
-    ("NVDA", "NVIDIA Corp.", 495.20, 0.030, 0.0008),
-    ("META", "Meta Platforms", 355.60, 0.025, 0.0005),
-    ("DIS", "Walt Disney Co.", 91.40, 0.019, -0.0001),
-    ("NFLX", "Netflix Inc.", 485.10, 0.023, 0.0006),
+    ("AAPL", "Apple Inc.", 182.50, 0.018, 0.0005, "Technology", "Consumer Electronics"),
+    ("MSFT", "Microsoft Corp.", 378.90, 0.016, 0.0006, "Technology", "Software"),
+    ("GOOG", "Alphabet Inc.", 141.20, 0.020, 0.0004, "Technology", "Internet Services"),
+    ("AMZN", "Amazon.com Inc.", 178.30, 0.022, 0.0003, "Technology", "E-Commerce"),
+    ("TSLA", "Tesla Inc.", 248.40, 0.035, 0.0001, "Consumer Cyclical", "Auto Manufacturers"),
+    ("JPM", "JPMorgan Chase", 196.70, 0.014, 0.0004, "Financials", "Banking"),
+    ("NVDA", "NVIDIA Corp.", 495.20, 0.030, 0.0008, "Technology", "Semiconductors"),
+    ("META", "Meta Platforms", 355.60, 0.025, 0.0005, "Technology", "Social Media"),
+    ("DIS", "Walt Disney Co.", 91.40, 0.019, -0.0001, "Consumer Cyclical", "Entertainment"),
+    ("NFLX", "Netflix Inc.", 485.10, 0.023, 0.0006, "Consumer Cyclical", "Entertainment"),
 ]
 
 # ─────────────────────────────────────────────
@@ -175,6 +175,8 @@ class Stock:
     price: float
     volatility: float
     drift: float
+    sector: str = "Unknown"
+    industry: str = "Unknown"
     price_history: List[float] = field(default_factory=list)
 
     def __post_init__(self):
@@ -267,6 +269,7 @@ class Portfolio:
         self.realized_pnl: float = 0.0
         self.pending_orders: List[LimitOrder] = []
         self._next_order_id: int = 1
+        self.value_history: List[Tuple[int, float]] = []  # (day, total_value)
 
     def buy(self, stock: Stock, shares: int, day: int) -> Tuple[bool, str]:
         if shares <= 0:
@@ -474,6 +477,14 @@ class Portfolio:
         )
         return self.cash + stock_value + opt_value
 
+    def record_value(self, day: int, stocks: Dict[str, "Stock"]):
+        """Record portfolio value for a given day, replacing any existing entry."""
+        total_value = self.get_portfolio_value(stocks, day)
+        if self.value_history and self.value_history[-1][0] == day:
+            self.value_history[-1] = (day, total_value)
+        else:
+            self.value_history.append((day, total_value))
+
     def get_unrealized_pnl(self, stocks: Dict[str, Stock], day: int = 0) -> float:
         stock_pnl = sum(
             h.shares * (stocks[h.ticker].price - h.avg_cost)
@@ -624,6 +635,742 @@ class Portfolio:
 
         self.pending_orders = remaining
         return messages
+
+
+# ─────────────────────────────────────────────
+# Mock News Generator
+# ─────────────────────────────────────────────
+class NewsGenerator:
+    """Generates realistic mock financial news for stocks."""
+
+    def reset(self):
+        """Clear all cached news (used on simulation restart)."""
+        self.generated_news = []
+        self._news_cache = {}
+
+    # News templates by sentiment
+    POSITIVE_HEADLINES = [
+        "{ticker} Beats Q{quarter} Earnings Estimates by ${beat:.2f} EPS",
+        "{ticker} Announces New Partnership with {partner}",
+        "{ticker} Expands into {market} Market, Stock Jumps",
+        "{ticker} Receives Upgrade from {analyst} to 'Buy'",
+        "{ticker} Launches Innovative {product} Product Line",
+        "{ticker} Exceeds Revenue Guidance, Raises Full-Year Outlook",
+        "{ticker} Secures Major Contract with {partner}",
+        "{ticker} Announces Share Buyback Program of ${amount}B",
+        "{ticker} Named Top Pick in {sector} Sector by {analyst}",
+        "{ticker} Reports Record User Growth in {quarter}",
+    ]
+
+    NEGATIVE_HEADLINES = [
+        "{ticker} Misses Q{quarter} Earnings, Shares Fall",
+        "{ticker} Faces Regulatory Scrutiny Over {issue}",
+        "{ticker} Downgraded by {analyst} Citing Valuation Concerns",
+        "{ticker} Warns of Supply Chain Disruptions in {market}",
+        "{ticker} CEO Announces Unexpected Departure",
+        "{ticker} Reports Slower Growth in Key {market} Segment",
+        "{ticker} Faces Increased Competition from {partner}",
+        "{ticker} Cuts Full-Year Guidance Amid Market Uncertainty",
+        "{ticker} Under Investigation for {issue}",
+        "{ticker} Announces Layoffs Affecting {amount}% of Workforce",
+    ]
+
+    NEUTRAL_HEADLINES = [
+        "{ticker} to Report Q{quarter} Earnings Next Week",
+        "{ticker} Maintains Dividend at ${amount} Per Share",
+        "{ticker} Announces Annual Shareholder Meeting Date",
+        "{ticker} Updates {product} Platform with Minor Features",
+        "{ticker} Participating in {analyst} Technology Conference",
+        "{ticker} Releases Sustainability Report for {quarter}",
+        "{ticker} Opens New Office in {market}",
+        "{ticker} Board Approves Executive Compensation Plan",
+    ]
+
+    PARTNERS = ["Amazon", "Microsoft", "Google", "Apple", "Tesla", "Samsung", "Intel", "AMD", 
+                "Oracle", "Salesforce", "IBM", "NVIDIA", "Qualcomm", "Cisco", "Adobe"]
+    MARKETS = ["European", "Asian", "Emerging", "Latin American", "Indian", "Chinese", "African"]
+    PRODUCTS = ["Cloud", "AI", "Mobile", "Enterprise", "Consumer", "Healthcare", "Fintech"]
+    ANALYSTS = ["Goldman Sachs", "Morgan Stanley", "JP Morgan", "Bank of America", 
+                "Citigroup", "Deutsche Bank", "Barclays", "UBS", "Credit Suisse"]
+    ISSUES = ["Data Privacy", "Antitrust", "Environmental Compliance", "Labor Practices", 
+              "Patent Infringement", "Accounting Practices"]
+
+    def __init__(self):
+        self.generated_news: List[Dict] = []
+        self._news_cache: Dict[str, List[Dict]] = {}  # ticker -> news list
+
+    def _generate_headline(self, ticker: str, sentiment: str) -> str:
+        """Generate a single headline for a stock."""
+        if sentiment == "positive":
+            template = random.choice(self.POSITIVE_HEADLINES)
+        elif sentiment == "negative":
+            template = random.choice(self.NEGATIVE_HEADLINES)
+        else:
+            template = random.choice(self.NEUTRAL_HEADLINES)
+
+        return template.format(
+            ticker=ticker,
+            quarter=random.choice([1, 2, 3, 4]),
+            beat=round(random.uniform(0.05, 0.50), 2),
+            partner=random.choice(self.PARTNERS),
+            market=random.choice(self.MARKETS),
+            analyst=random.choice(self.ANALYSTS),
+            product=random.choice(self.PRODUCTS),
+            amount=round(random.uniform(1, 50), 1),
+            sector="Technology",
+            issue=random.choice(self.ISSUES)
+        )
+
+    def generate_news(self, stocks: Dict[str, Stock], day: int, num_stories: int = 3) -> List[Dict]:
+        """Generate news stories for the day."""
+        news = []
+        tickers = list(stocks.keys())
+        
+        for _ in range(num_stories):
+            ticker = random.choice(tickers)
+            stock = stocks[ticker]
+            
+            # Determine sentiment based on recent price movement
+            recent_change = stock.day_change_pct if len(stock.price_history) > 1 else 0
+            if recent_change > 2:
+                sentiment = "positive"
+            elif recent_change < -2:
+                sentiment = "negative"
+            else:
+                sentiment = random.choice(["positive", "neutral", "negative"])
+            
+            headline = self._generate_headline(ticker, sentiment)
+            
+            story = {
+                "day": day,
+                "ticker": ticker,
+                "headline": headline,
+                "sentiment": sentiment,
+                "impact": random.uniform(0.5, 3.0) if sentiment != "neutral" else 0
+            }
+            news.append(story)
+            
+            # Cache by ticker
+            if ticker not in self._news_cache:
+                self._news_cache[ticker] = []
+            self._news_cache[ticker].append(story)
+        
+        self.generated_news.extend(news)
+        return news
+
+    def get_news_for_ticker(self, ticker: str, limit: int = 5) -> List[Dict]:
+        """Get recent news for a specific ticker."""
+        news = self._news_cache.get(ticker, [])
+        return news[-limit:]
+
+    def format_news(self, news_items: List[Dict]) -> str:
+        """Format news items for display."""
+        lines = []
+        for item in news_items:
+            sentiment_icon = {"positive": "📈", "negative": "📉", "neutral": "📰"}[item["sentiment"]]
+            lines.append(f"  {sentiment_icon} Day {item['day']}: {item['headline']}")
+        return "\n".join(lines) if lines else "  No recent news."
+
+
+# ─────────────────────────────────────────────
+# Portfolio Analyzer
+# ─────────────────────────────────────────────
+class PortfolioAnalyzer:
+    """Analyzes portfolio composition, risk, and provides recommendations."""
+
+    # Risk thresholds
+    CONCENTRATION_WARNING = 0.30  # 30% in single position
+    CONCENTRATION_CRITICAL = 0.50  # 50% in single position
+    SECTOR_WARNING = 0.50  # 50% in single sector
+    SECTOR_CRITICAL = 0.70  # 70% in single sector
+    VOLATILITY_HIGH = 0.025  # 2.5% daily volatility
+    DRAWDOWN_WARNING = -0.15  # 15% drawdown
+    DRAWDOWN_CRITICAL = -0.25  # 25% drawdown
+    SHARED_NEWS = NewsGenerator()
+
+    # Sector risk profiles
+    SECTOR_RISKS = {
+        "Technology": "high",
+        "Consumer Cyclical": "medium-high",
+        "Financials": "medium",
+        "Healthcare": "low-medium",
+        "Energy": "high",
+        "Utilities": "low",
+        "Consumer Defensive": "low",
+        "Industrials": "medium",
+        "Materials": "medium-high",
+        "Communication Services": "medium",
+        "Real Estate": "medium",
+    }
+
+    def __init__(self, portfolio: Portfolio, stocks: Dict[str, Stock]):
+        self.portfolio = portfolio
+        self.stocks = stocks
+        self.news_gen = self.SHARED_NEWS
+
+    def analyze(self, day: int) -> Dict:
+        """Run complete portfolio analysis."""
+        return {
+            "overview": self._analyze_overview(day),
+            "distribution": self._analyze_distribution(day),
+            "sector_allocation": self._analyze_sector_allocation(day),
+            "risk_metrics": self._calculate_risk_metrics(day),
+            "position_analysis": self._analyze_positions(day),
+            "warnings": self._generate_warnings(day),
+            "recommendations": self._generate_recommendations(day),
+            "news": self.news_gen.generate_news(self.stocks, day, 3)
+        }
+
+    def _analyze_overview(self, day: int) -> Dict:
+        """Generate portfolio overview statistics."""
+        total_value = self.portfolio.get_portfolio_value(self.stocks, day)
+        cash_pct = self.portfolio.cash / total_value if total_value > 0 else 0
+        
+        stock_value = sum(
+            h.shares * self.stocks[h.ticker].price 
+            for h in self.portfolio.holdings.values()
+        )
+        
+        opt_value = sum(
+            self.portfolio._option_market_value(opt, self.stocks, day)
+            for opt in self.portfolio.option_holdings
+        )
+        
+        return {
+            "total_value": total_value,
+            "cash": self.portfolio.cash,
+            "cash_pct": cash_pct,
+            "stock_value": stock_value,
+            "stock_pct": stock_value / total_value if total_value > 0 else 0,
+            "option_value": opt_value,
+            "option_pct": opt_value / total_value if total_value > 0 else 0,
+            "num_positions": len(self.portfolio.holdings),
+            "num_options": len(self.portfolio.option_holdings),
+            "realized_pnl": self.portfolio.realized_pnl,
+            "unrealized_pnl": self.portfolio.get_unrealized_pnl(self.stocks, day),
+            "total_pnl": total_value - self.portfolio.starting_balance,
+            "roi_pct": ((total_value / self.portfolio.starting_balance) - 1) * 100
+        }
+
+    def _analyze_distribution(self, day: int) -> Dict:
+        """Analyze position size distribution."""
+        total_value = self.portfolio.get_portfolio_value(self.stocks, day)
+        if total_value == 0:
+            return {"positions": [], "largest_position": None}
+        
+        positions = []
+        for ticker, holding in self.portfolio.holdings.items():
+            stock = self.stocks[ticker]
+            value = holding.shares * stock.price
+            pct = value / total_value
+            pnl = value - holding.total_cost
+            pnl_pct = (pnl / holding.total_cost * 100) if holding.total_cost > 0 else 0
+            
+            positions.append({
+                "ticker": ticker,
+                "name": stock.name,
+                "sector": stock.sector,
+                "industry": stock.industry,
+                "shares": holding.shares,
+                "value": value,
+                "pct": pct,
+                "avg_cost": holding.avg_cost,
+                "current_price": stock.price,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct
+            })
+        
+        # Add options as positions
+        for opt in self.portfolio.option_holdings:
+            stock = self.stocks[opt.ticker]
+            value = self.portfolio._option_market_value(opt, self.stocks, day)
+            pct = value / total_value if total_value > 0 else 0
+            pnl = value - opt.total_cost
+            
+            positions.append({
+                "ticker": f"{opt.ticker} {opt.option_type.upper()}",
+                "name": f"{opt.strike} Strike (Exp {opt.expiry_day})",
+                "sector": f"Option ({stock.sector})",
+                "industry": "Derivative",
+                "contracts": opt.contracts,
+                "value": value,
+                "pct": pct,
+                "avg_cost": opt.avg_cost * 100,
+                "current_price": self._get_opt_premium(opt, day),
+                "pnl": pnl,
+                "pnl_pct": (pnl / opt.total_cost * 100) if opt.total_cost > 0 else 0
+            })
+        
+        positions.sort(key=lambda x: x["value"], reverse=True)
+        
+        return {
+            "positions": positions,
+            "largest_position": positions[0] if positions else None,
+            "num_positions": len(positions)
+        }
+
+    def _get_opt_premium(self, opt: OptionHolding, day: int) -> float:
+        """Get current premium for an option."""
+        stock = self.stocks[opt.ticker]
+        T = option_time_left(opt.expiry_day, day)
+        return option_premium(stock, opt.strike, T, opt.option_type)
+
+    def _analyze_sector_allocation(self, day: int) -> Dict:
+        """Analyze allocation by sector."""
+        total_value = self.portfolio.get_portfolio_value(self.stocks, day)
+        if total_value == 0:
+            return {"sectors": {}, "largest_sector": None}
+        
+        sectors = {}
+        
+        # Stock allocations by sector
+        for ticker, holding in self.portfolio.holdings.items():
+            stock = self.stocks[ticker]
+            value = holding.shares * stock.price
+            if stock.sector not in sectors:
+                sectors[stock.sector] = {"value": 0, "stocks": [], "risk": self.SECTOR_RISKS.get(stock.sector, "medium")}
+            sectors[stock.sector]["value"] += value
+            sectors[stock.sector]["stocks"].append(ticker)
+        
+        # Option allocations (attribute to underlying sector)
+        for opt in self.portfolio.option_holdings:
+            stock = self.stocks[opt.ticker]
+            value = self.portfolio._option_market_value(opt, self.stocks, day)
+            sector_key = f"{stock.sector} (Options)"
+            if sector_key not in sectors:
+                sectors[sector_key] = {"value": 0, "stocks": [], "risk": self.SECTOR_RISKS.get(stock.sector, "medium")}
+            sectors[sector_key]["value"] += value
+            sectors[sector_key]["stocks"].append(f"{opt.ticker} {opt.option_type}")
+        
+        # Calculate percentages
+        for sector in sectors:
+            sectors[sector]["pct"] = sectors[sector]["value"] / total_value
+        
+        # Find largest sector
+        largest = max(sectors.items(), key=lambda x: x[1]["value"]) if sectors else None
+        
+        return {
+            "sectors": sectors,
+            "largest_sector": largest,
+            "num_sectors": len(set(s.replace(" (Options)", "") for s in sectors.keys()))
+        }
+
+    def _calculate_risk_metrics(self, day: int) -> Dict:
+        """Calculate various risk metrics."""
+        total_value = self.portfolio.get_portfolio_value(self.stocks, day)
+        
+        # Portfolio volatility (weighted average of position volatilities)
+        weights = []
+        vols = []
+        for ticker, holding in self.portfolio.holdings.items():
+            stock = self.stocks[ticker]
+            weight = (holding.shares * stock.price) / total_value if total_value > 0 else 0
+            weights.append(weight)
+            vols.append(stock.volatility)
+        
+        portfolio_vol = sum(w * v for w, v in zip(weights, vols)) if weights else 0
+        
+        # Beta approximation (simplified)
+        portfolio_beta = 1.0  # Assume market beta for simplicity
+        
+        # Max drawdown from peak using recorded history
+        if self.portfolio.value_history:
+            peak_value = self.portfolio.value_history[0][1]
+            max_drawdown = 0.0
+            for _, value in self.portfolio.value_history:
+                if value > peak_value:
+                    peak_value = value
+                drawdown = (value - peak_value) / peak_value if peak_value > 0 else 0
+                max_drawdown = min(max_drawdown, drawdown)
+        else:
+            max_drawdown = 0.0
+        
+        current_pnl_pct = (total_value - self.portfolio.starting_balance) / self.portfolio.starting_balance
+        
+        return {
+            "portfolio_volatility": portfolio_vol,
+            "annualized_volatility": portfolio_vol * math.sqrt(TRADING_DAYS_PER_YEAR),
+            "portfolio_beta": portfolio_beta,
+            "current_drawdown": current_pnl_pct if current_pnl_pct < 0 else 0,
+            "max_drawdown": max_drawdown,
+            "value_at_risk_95": total_value * portfolio_vol * 1.65  # 95% VaR (simplified)
+        }
+
+    def _analyze_positions(self, day: int) -> List[Dict]:
+        """Analyze individual positions with pros/cons."""
+        analyses = []
+        
+        for ticker, holding in self.portfolio.holdings.items():
+            stock = self.stocks[ticker]
+            analysis = self._analyze_single_position(ticker, holding, stock, day)
+            analyses.append(analysis)
+        
+        for opt in self.portfolio.option_holdings:
+            stock = self.stocks[opt.ticker]
+            analysis = self._analyze_option_position(opt, stock, day)
+            analyses.append(analysis)
+        
+        return analyses
+
+    def _analyze_single_position(self, ticker: str, holding: Holding, stock: Stock, day: int) -> Dict:
+        """Analyze a single stock position."""
+        current_price = stock.price
+        avg_cost = holding.avg_cost
+        pnl_pct = ((current_price - avg_cost) / avg_cost * 100) if avg_cost > 0 else 0
+        
+        # Calculate price momentum
+        if len(stock.price_history) >= 5:
+            momentum_5d = (current_price - stock.price_history[-5]) / stock.price_history[-5] * 100
+        else:
+            momentum_5d = 0
+        
+        if len(stock.price_history) >= 10:
+            momentum_10d = (current_price - stock.price_history[-10]) / stock.price_history[-10] * 100
+        else:
+            momentum_10d = 0
+        
+        pros = []
+        cons = []
+        
+        # Profitability analysis
+        if pnl_pct > 10:
+            pros.append(f"Strong unrealized gains (+{pnl_pct:.1f}%)")
+        elif pnl_pct > 0:
+            pros.append(f"Currently profitable (+{pnl_pct:.1f}%)")
+        elif pnl_pct < -10:
+            cons.append(f"Significant unrealized loss ({pnl_pct:.1f}%)")
+        elif pnl_pct < 0:
+            cons.append(f"Small unrealized loss ({pnl_pct:.1f}%)")
+        
+        # Momentum analysis
+        if momentum_5d > 3:
+            pros.append(f"Positive 5-day momentum (+{momentum_5d:.1f}%)")
+        elif momentum_5d < -3:
+            cons.append(f"Negative 5-day momentum ({momentum_5d:.1f}%)")
+        
+        if momentum_10d > 5:
+            pros.append(f"Strong 10-day uptrend (+{momentum_10d:.1f}%)")
+        elif momentum_10d < -5:
+            cons.append(f"Declining 10-day trend ({momentum_10d:.1f}%)")
+        
+        # Volatility analysis
+        if stock.volatility < 0.015:
+            pros.append("Low volatility - stable investment")
+        elif stock.volatility > 0.03:
+            cons.append("High volatility - higher risk")
+        
+        # Sector analysis
+        sector_risk = self.SECTOR_RISKS.get(stock.sector, "medium")
+        if sector_risk == "low":
+            pros.append(f"Defensive {stock.sector} sector")
+        elif sector_risk == "high":
+            cons.append(f"Cyclical {stock.sector} sector - higher risk")
+        
+        # Price relative to history
+        if len(stock.price_history) > 1:
+            hist_high = max(stock.price_history)
+            hist_low = min(stock.price_history)
+            if current_price >= hist_high * 0.95:
+                cons.append("Trading near historical high - consider taking profits")
+            elif current_price <= hist_low * 1.05:
+                pros.append("Trading near historical low - potential value opportunity")
+        
+        return {
+            "type": "stock",
+            "ticker": ticker,
+            "name": stock.name,
+            "sector": stock.sector,
+            "shares": holding.shares,
+            "avg_cost": avg_cost,
+            "current_price": current_price,
+            "pnl": holding.shares * (current_price - avg_cost),
+            "pnl_pct": pnl_pct,
+            "momentum_5d": momentum_5d,
+            "momentum_10d": momentum_10d,
+            "volatility": stock.volatility,
+            "pros": pros,
+            "cons": cons,
+            "recommendation": self._position_recommendation(pros, cons, pnl_pct)
+        }
+
+    def _analyze_option_position(self, opt: OptionHolding, stock: Stock, day: int) -> Dict:
+        """Analyze an option position."""
+        T = option_time_left(opt.expiry_day, day)
+        dte = max(0, opt.expiry_day - day)
+        current_premium = option_premium(stock, opt.strike, T, opt.option_type)
+        greeks = option_greeks(stock, opt.strike, T, opt.option_type)
+        
+        mkt_value = current_premium * 100 * opt.contracts
+        cost_basis = opt.avg_cost * 100 * opt.contracts
+        pnl = mkt_value - cost_basis
+        pnl_pct = (pnl / cost_basis * 100) if cost_basis > 0 else 0
+        
+        # Moneyness
+        if opt.option_type == "call":
+            intrinsic = max(0, stock.price - opt.strike)
+            moneyness = "ITM" if stock.price > opt.strike else ("ATM" if abs(stock.price - opt.strike) < 5 else "OTM")
+        else:
+            intrinsic = max(0, opt.strike - stock.price)
+            moneyness = "ITM" if stock.price < opt.strike else ("ATM" if abs(stock.price - opt.strike) < 5 else "OTM")
+        
+        pros = []
+        cons = []
+        
+        # Time decay warning
+        if dte <= 5:
+            cons.append(f"⚠️ CRITICAL: Only {dte} days to expiry - rapid time decay")
+        elif dte <= 10:
+            cons.append(f"⚠️ WARNING: Only {dte} days to expiry - accelerating time decay")
+        elif dte <= 20:
+            cons.append(f"Time decay accelerating ({dte} DTE)")
+        else:
+            pros.append(f"Adequate time remaining ({dte} DTE)")
+        
+        # Moneyness
+        if moneyness == "ITM":
+            pros.append(f"In-the-money with ${intrinsic:.2f} intrinsic value")
+        elif moneyness == "ATM":
+            pros.append("At-the-money - high delta sensitivity")
+            cons.append("At-the-money - high gamma risk")
+        else:
+            cons.append("Out-of-the-money - needs price movement")
+        
+        # Profitability
+        if pnl_pct > 50:
+            pros.append(f"Excellent returns (+{pnl_pct:.1f}%) - consider taking profits")
+        elif pnl_pct > 0:
+            pros.append(f"Currently profitable (+{pnl_pct:.1f}%)")
+        elif pnl_pct < -50:
+            cons.append(f"Significant loss ({pnl_pct:.1f}%) - consider cutting losses")
+        
+        # Greeks analysis
+        if abs(greeks.delta) > 0.7:
+            pros.append("High delta - behaves like stock")
+        if greeks.theta < -0.5:
+            cons.append(f"High theta decay ({greeks.theta:.3f}/day)")
+        
+        return {
+            "type": "option",
+            "ticker": opt.ticker,
+            "option_type": opt.option_type,
+            "strike": opt.strike,
+            "expiry_day": opt.expiry_day,
+            "dte": dte,
+            "contracts": opt.contracts,
+            "moneyness": moneyness,
+            "intrinsic": intrinsic,
+            "current_premium": current_premium,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "delta": greeks.delta,
+            "gamma": greeks.gamma,
+            "theta": greeks.theta,
+            "vega": greeks.vega,
+            "pros": pros,
+            "cons": cons,
+            "recommendation": self._option_recommendation(opt, dte, moneyness, pnl_pct, greeks)
+        }
+
+    def _position_recommendation(self, pros: List[str], cons: List[str], pnl_pct: float) -> str:
+        """Generate recommendation for a stock position."""
+        if pnl_pct > 20 and len(cons) > len(pros):
+            return "HOLD/REDUCE - Take some profits given concerns"
+        elif pnl_pct < -15:
+            return "REVIEW - Consider cutting losses"
+        elif len(pros) > len(cons) + 1:
+            return "HOLD/BUY - Favorable outlook"
+        elif len(cons) > len(pros) + 1:
+            return "REDUCE - Multiple concerns"
+        else:
+            return "HOLD - Monitor closely"
+
+    def _option_recommendation(self, opt: OptionHolding, dte: int, moneyness: str, pnl_pct: float, greeks: OptionGreeks) -> str:
+        """Generate recommendation for an option position."""
+        if dte <= 5:
+            if moneyness == "ITM":
+                return "EXERCISE or CLOSE - Expiring soon, capture intrinsic value"
+            elif pnl_pct < -50:
+                return "LET EXPIRE - Minimal recovery expected"
+            else:
+                return "CLOSE - Time decay is extreme"
+        
+        if pnl_pct > 100:
+            return "CLOSE/ROLL - Excellent gains, consider taking profits"
+        
+        if moneyness == "OTM" and dte < 20:
+            return "CLOSE - OTM with limited time, low probability"
+        
+        if pnl_pct < -50 and dte < 30:
+            return "CLOSE - Cut losses, unlikely to recover"
+        
+        return "HOLD - Monitor for changes"
+
+    def _generate_warnings(self, day: int) -> List[Dict]:
+        """Generate risk warnings for the portfolio."""
+        warnings = []
+        total_value = self.portfolio.get_portfolio_value(self.stocks, day)
+        
+        if total_value == 0:
+            return warnings
+        
+        # Check position concentration
+        dist = self._analyze_distribution(day)
+        if dist["largest_position"]:
+            largest = dist["largest_position"]
+            if largest["pct"] > self.CONCENTRATION_CRITICAL:
+                warnings.append({
+                    "level": "CRITICAL",
+                    "type": "concentration",
+                    "message": f"CRITICAL: {largest['ticker']} represents {largest['pct']*100:.1f}% of portfolio. Severe concentration risk!",
+                    "explanation": "Having over 50% in a single position exposes you to significant idiosyncratic risk. If this stock declines sharply, your entire portfolio suffers disproportionately. Consider diversifying into other sectors."
+                })
+            elif largest["pct"] > self.CONCENTRATION_WARNING:
+                warnings.append({
+                    "level": "WARNING",
+                    "type": "concentration",
+                    "message": f"WARNING: {largest['ticker']} is {largest['pct']*100:.1f}% of portfolio. High concentration.",
+                    "explanation": "Positions over 30% create concentration risk. Consider trimming this position and reinvesting in underrepresented sectors to improve diversification."
+                })
+        
+        # Check sector concentration
+        sectors = self._analyze_sector_allocation(day)
+        if sectors["largest_sector"]:
+            sector_name, sector_data = sectors["largest_sector"]
+            base_sector = sector_name.replace(" (Options)", "")
+            if sector_data["pct"] > self.SECTOR_CRITICAL:
+                warnings.append({
+                    "level": "CRITICAL",
+                    "type": "sector",
+                    "message": f"CRITICAL: {base_sector} sector is {sector_data['pct']*100:.1f}% of portfolio!",
+                    "explanation": f"Extreme sector concentration makes your portfolio vulnerable to sector-specific downturns. {base_sector} stocks often move together - a sector rotation or regulatory change could significantly impact your entire portfolio."
+                })
+            elif sector_data["pct"] > self.SECTOR_WARNING:
+                warnings.append({
+                    "level": "WARNING",
+                    "type": "sector",
+                    "message": f"WARNING: {base_sector} sector concentration at {sector_data['pct']*100:.1f}%",
+                    "explanation": f"Over 50% in {base_sector} reduces diversification benefits. Consider adding exposure to defensive sectors like Consumer Defensive or Utilities to balance your portfolio."
+                })
+        
+        # Check cash levels
+        cash_pct = self.portfolio.cash / total_value
+        if cash_pct > 0.50:
+            warnings.append({
+                "level": "INFO",
+                "type": "cash",
+                "message": f"High cash position: {cash_pct*100:.1f}% uninvested",
+                "explanation": "While cash provides safety, holding over 50% in cash may lead to opportunity cost. Consider dollar-cost averaging into quality positions or adding to existing winners."
+            })
+        elif cash_pct < 0.05:
+            warnings.append({
+                "level": "WARNING",
+                "type": "cash",
+                "message": f"Low cash: Only {cash_pct*100:.1f}% available",
+                "explanation": "With less than 5% cash, you have limited dry powder for opportunities or emergencies. Consider building a cash reserve of at least 10-20%."
+            })
+        
+        # Check for options expiring soon
+        for opt in self.portfolio.option_holdings:
+            dte = max(0, opt.expiry_day - day)
+            if dte <= 5:
+                warnings.append({
+                    "level": "CRITICAL",
+                    "type": "options",
+                    "message": f"URGENT: {opt.ticker} {opt.option_type.upper()} ${opt.strike} expires in {dte} days!",
+                    "explanation": "Options lose value rapidly near expiry (theta decay). If ITM, consider exercising. If OTM, consider closing to salvage remaining value."
+                })
+        
+        # Check portfolio performance
+        total_pnl = total_value - self.portfolio.starting_balance
+        pnl_pct = total_pnl / self.portfolio.starting_balance
+        if pnl_pct < self.DRAWDOWN_CRITICAL:
+            warnings.append({
+                "level": "CRITICAL",
+                "type": "performance",
+                "message": f"Portfolio down {pnl_pct*100:.1f}% - Significant drawdown",
+                "explanation": "Your portfolio has experienced a severe drawdown. Review your risk management strategy. Consider reducing position sizes and avoiding high-beta stocks until market conditions improve."
+            })
+        elif pnl_pct < self.DRAWDOWN_WARNING:
+            warnings.append({
+                "level": "WARNING",
+                "type": "performance",
+                "message": f"Portfolio down {pnl_pct*100:.1f}% - Monitor closely",
+                "explanation": "Your portfolio is in a moderate drawdown. Review underperforming positions and ensure your stop-losses are in place."
+            })
+        
+        return warnings
+
+    def _generate_recommendations(self, day: int) -> List[Dict]:
+        """Generate portfolio-level recommendations."""
+        recommendations = []
+        total_value = self.portfolio.get_portfolio_value(self.stocks, day)
+        
+        if total_value == 0:
+            return [{"title": "Start Investing", "action": "Begin building positions in diversified sectors"}]
+        
+        dist = self._analyze_distribution(day)
+        sectors = self._analyze_sector_allocation(day)
+        
+        # Diversification recommendations
+        if sectors["num_sectors"] < 3:
+            recommendations.append({
+                "title": "Improve Sector Diversification",
+                "priority": "HIGH",
+                "action": f"Your portfolio spans only {sectors['num_sectors']} sectors. Consider adding exposure to underrepresented sectors to reduce correlation risk."
+            })
+        
+        # Position sizing recommendations
+        if dist["largest_position"] and dist["largest_position"]["pct"] > 0.25:
+            recommendations.append({
+                "title": "Reduce Concentration Risk",
+                "priority": "HIGH",
+                "action": f"Trim {dist['largest_position']['ticker']} position from {dist['largest_position']['pct']*100:.1f}% to under 20%. Reinvest proceeds across 2-3 different sectors."
+            })
+        
+        # Cash management
+        cash_pct = self.portfolio.cash / total_value
+        if cash_pct > 0.30:
+            recommendations.append({
+                "title": "Deploy Excess Cash",
+                "priority": "MEDIUM",
+                "action": f"You have {cash_pct*100:.1f}% in cash. Consider deploying 10-15% into quality dividend stocks or adding to existing winners on dips."
+            })
+        
+        # Profit taking
+        big_winners = [p for p in dist["positions"] if p.get("pnl_pct", 0) > 30]
+        if len(big_winners) >= 2:
+            recommendations.append({
+                "title": "Consider Taking Profits",
+                "priority": "MEDIUM",
+                "action": f"You have {len(big_winners)} positions with >30% gains. Consider trimming 20-30% of these positions to lock in profits and reduce risk."
+            })
+        
+        # Loss management
+        big_losers = [p for p in dist["positions"] if p.get("pnl_pct", 0) < -20]
+        if len(big_losers) >= 1:
+            recommendations.append({
+                "title": "Review Losing Positions",
+                "priority": "HIGH",
+                "action": f"{len(big_losers)} position(s) down >20%. Re-evaluate thesis. If fundamentals changed, consider cutting losses. If not, consider averaging down carefully."
+            })
+        
+        # Options recommendations
+        if not self.portfolio.option_holdings:
+            recommendations.append({
+                "title": "Consider Options for Income/Hedging",
+                "priority": "LOW",
+                "action": "You have no options positions. Consider covered calls on large stock positions for income, or protective puts for downside protection."
+            })
+        
+        # Rebalancing suggestion
+        if len(self.portfolio.holdings) >= 3:
+            recommendations.append({
+                "title": "Periodic Rebalancing",
+                "priority": "MEDIUM",
+                "action": "Review portfolio quarterly. Trim winners that exceed target allocation, add to quality positions that have underperformed."
+            })
+        
+        return recommendations
 
 
 # ─────────────────────────────────────────────
@@ -1188,6 +1935,139 @@ def print_pending_orders(portfolio: Portfolio, stocks: Dict[str, Stock]):
     print()
 
 
+def print_portfolio_analysis(analysis: Dict, day: int):
+    """Display comprehensive portfolio analysis."""
+    overview = analysis["overview"]
+    distribution = analysis["distribution"]
+    sectors = analysis["sector_allocation"]
+    risk = analysis["risk_metrics"]
+    warnings = analysis["warnings"]
+    recommendations = analysis["recommendations"]
+    news = analysis["news"]
+    
+    print(colored("\n  ╔══════════════════════════════════════════════════════════════════════╗", "magenta"))
+    print(colored("  ║", "magenta") + colored("           📊 PORTFOLIO ANALYSIS REPORT 📊", "bold").center(76) + colored("║", "magenta"))
+    print(colored("  ╚══════════════════════════════════════════════════════════════════════╝", "magenta"))
+    
+    # Portfolio Overview
+    print(colored("\n  ┌────────────────────────────────────────────────────────────────────┐", "cyan"))
+    print(colored("  │", "cyan") + colored(" PORTFOLIO OVERVIEW", "bold").center(70) + colored("│", "cyan"))
+    print(colored("  ├────────────────────────────────────────────────────────────────────┤", "cyan"))
+    print(f"  │  Total Value:        {format_money(overview['total_value']):>50}  │")
+    print(f"  │  Cash:               {format_money(overview['cash']):>50}  │")
+    print(f"  │  Cash %:             {overview['cash_pct']*100:>49.1f}%  │")
+    print(f"  │  Stock Value:        {format_money(overview['stock_value']):>50}  │")
+    print(f"  │  Option Value:       {format_money(overview['option_value']):>50}  │")
+    print(f"  │  Positions:          {overview['num_positions']:>50}  │")
+    print(f"  │  Option Positions:   {overview['num_options']:>50}  │")
+    print(colored("  ├────────────────────────────────────────────────────────────────────┤", "cyan"))
+    print(f"  │  Realized P&L:       {format_money(overview['realized_pnl']):>50}  │")
+    print(f"  │  Unrealized P&L:     {format_money(overview['unrealized_pnl']):>50}  │")
+    print(f"  │  Total P&L:          {format_money(overview['total_pnl']):>50}  │")
+    print(f"  │  ROI:                {format_change(overview['roi_pct'], True):>50}  │")
+    print(colored("  └────────────────────────────────────────────────────────────────────┘", "cyan"))
+    
+    # Risk Metrics
+    print(colored("\n  ┌────────────────────────────────────────────────────────────────────┐", "cyan"))
+    print(colored("  │", "cyan") + colored(" RISK METRICS", "bold").center(70) + colored("│", "cyan"))
+    print(colored("  ├────────────────────────────────────────────────────────────────────┤", "cyan"))
+    print(f"  │  Daily Volatility:        {risk['portfolio_volatility']*100:>45.2f}%  │")
+    print(f"  │  Annualized Volatility:   {risk['annualized_volatility']*100:>45.2f}%  │")
+    print(f"  │  95% VaR (1-day):         {format_money(risk['value_at_risk_95']):>50}  │")
+    if risk.get('max_drawdown', 0) < 0:
+        print(f"  │  Max Drawdown:            {format_change(risk['max_drawdown']*100, True):>50}  │")
+    if risk['current_drawdown'] < 0:
+        print(f"  │  Current Drawdown:        {format_change(risk['current_drawdown']*100, True):>50}  │")
+    print(colored("  └────────────────────────────────────────────────────────────────────┘", "cyan"))
+    
+    # Warnings Section
+    if warnings:
+        print(colored("\n  ⚠️  WARNINGS & ALERTS", "yellow"))
+        print(colored("  " + "═" * 70, "yellow"))
+        for warning in warnings:
+            level_color = {"CRITICAL": "red", "WARNING": "yellow", "INFO": "cyan"}[warning["level"]]
+            icon = "🔴" if warning["level"] == "CRITICAL" else ("🟡" if warning["level"] == "WARNING" else "🔵")
+            print(f"\n  {icon} {colored(warning['message'], level_color)}")
+            print(f"     {colored('Explanation:', 'dim')} {warning['explanation']}")
+        print()
+    
+    # Sector Allocation
+    if sectors["sectors"]:
+        print(colored("\n  ┌────────────────────────────────────────────────────────────────────┐", "cyan"))
+        print(colored("  │", "cyan") + colored(" SECTOR ALLOCATION", "bold").center(70) + colored("│", "cyan"))
+        print(colored("  ├────────────────────────────────────────────────────────────────────┤", "cyan"))
+        for sector_name, data in sorted(sectors["sectors"].items(), key=lambda x: x[1]["value"], reverse=True):
+            pct = data["pct"] * 100
+            bar_len = int(pct / 2)
+            bar = "█" * bar_len + "░" * (25 - bar_len)
+            risk_level = data.get("risk", "medium")
+            risk_icon = {"low": "🟢", "low-medium": "🟢", "medium": "🟡", "medium-high": "🟠", "high": "🔴"}.get(risk_level, "🟡")
+            print(f"  │  {sector_name:<25} {bar} {pct:>5.1f}%  {risk_icon}  │")
+        print(colored("  └────────────────────────────────────────────────────────────────────┘", "cyan"))
+    
+    # Position Distribution
+    if distribution["positions"]:
+        print(colored("\n  ┌────────────────────────────────────────────────────────────────────────────────────┐", "cyan"))
+        print(colored("  │", "cyan") + colored(" POSITION DISTRIBUTION", "bold").center(86) + colored("│", "cyan"))
+        print(colored("  ├────────────────────────────────────────────────────────────────────────────────────┤", "cyan"))
+        print(colored("  │", "cyan") + " Ticker          Value        %Port    P&L        Sector".ljust(86) + colored("│", "cyan"))
+        print(colored("  ├────────────────────────────────────────────────────────────────────────────────────┤", "cyan"))
+        for pos in distribution["positions"][:10]:  # Top 10 positions
+            ticker = pos["ticker"][:15]
+            value = pos["value"]
+            pct = pos["pct"] * 100
+            pnl = pos.get("pnl", 0)
+            pnl_str = format_change(pnl)
+            sector = pos.get("sector", "Unknown")[:15]
+            print(f"  │  {ticker:<15} ${value:>10,.2f}  {pct:>6.1f}%  {pnl_str:>12}  {sector:<15}  │")
+        print(colored("  └────────────────────────────────────────────────────────────────────────────────────┘", "cyan"))
+    
+    # Position Analysis (Pros/Cons)
+    if analysis["position_analysis"]:
+        print(colored("\n  📋 POSITION ANALYSIS", "yellow"))
+        print(colored("  " + "═" * 70, "yellow"))
+        for pos in analysis["position_analysis"]:
+            if pos["type"] == "stock":
+                print(f"\n  📈 {colored(pos['ticker'], 'bold')} - {pos['name']}")
+                print(f"     Shares: {pos['shares']:,} | Avg Cost: ${pos['avg_cost']:.2f} | Current: ${pos['current_price']:.2f}")
+                print(f"     P&L: {format_change(pos['pnl'])} ({format_change(pos['pnl_pct'], True)})")
+            else:
+                print(f"\n  📉 {colored(pos['ticker'] + ' ' + pos['option_type'].upper(), 'bold')} Strike ${pos['strike']:.0f}")
+                print(f"     Contracts: {pos['contracts']} | DTE: {pos['dte']} | Moneyness: {pos['moneyness']}")
+                print(f"     P&L: {format_change(pos['pnl'])} ({format_change(pos['pnl_pct'], True)})")
+            
+            if pos["pros"]:
+                print(f"     {colored('✅ Pros:', 'green')}")
+                for pro in pos["pros"]:
+                    print(f"        • {pro}")
+            if pos["cons"]:
+                print(f"     {colored('❌ Cons:', 'red')}")
+                for con in pos["cons"]:
+                    print(f"        • {con}")
+            print(f"     {colored('💡 Recommendation:', 'cyan')} {pos['recommendation']}")
+    
+    # Recommendations
+    if recommendations:
+        print(colored("\n  💡 PORTFOLIO RECOMMENDATIONS", "green"))
+        print(colored("  " + "═" * 70, "green"))
+        for rec in recommendations:
+            priority_color = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "cyan"}.get(rec.get("priority", "MEDIUM"), "yellow")
+            priority_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(rec.get("priority", "MEDIUM"), "🟡")
+            print(f"\n  {priority_icon} {colored(rec['title'], 'bold')} [{colored(rec.get('priority', 'MEDIUM'), priority_color)}]")
+            print(f"     {rec['action']}")
+    
+    # Market News
+    if news:
+        print(colored("\n  📰 MARKET NEWS", "cyan"))
+        print(colored("  " + "═" * 70, "cyan"))
+        for item in news:
+            sentiment_icon = {"positive": "📈", "negative": "📉", "neutral": "📰"}[item["sentiment"]]
+            sentiment_color = {"positive": "green", "negative": "red", "neutral": "dim"}[item["sentiment"]]
+            print(f"  {sentiment_icon} {colored(item['headline'], sentiment_color)}")
+    
+    print()
+
+
 def print_menu():
     print(colored("  ┌──────────────────────────────────────┐", "cyan"))
     print(colored("  │", "cyan") + colored("           ACTIONS MENU", "bold") + colored("               │", "cyan"))
@@ -1203,6 +2083,7 @@ def print_menu():
     print(colored("  │", "cyan") + "  [9] Place Limit Order               " + colored("│", "cyan"))
     print(colored("  │", "cyan") + "  [0] View / Cancel Limit Orders      " + colored("│", "cyan"))
     print(colored("  │", "cyan") + "  [P] View Portfolio                  " + colored("│", "cyan"))
+    print(colored("  │", "cyan") + "  [A] Portfolio Analysis              " + colored("│", "cyan"))
     print(colored("  │", "cyan") + "  [T] Transaction History             " + colored("│", "cyan"))
     print(colored("  │", "cyan") + "  [N] Next Day                        " + colored("│", "cyan"))
     print(colored("  │", "cyan") + "  [S] Skip Multiple Days              " + colored("│", "cyan"))
@@ -1270,6 +2151,8 @@ def advance_day(stocks: Dict[str, Stock], portfolio: Portfolio, day: int):
     limit_msgs = portfolio.check_limit_orders(stocks, day)
     messages.extend(limit_msgs)
 
+    portfolio.record_value(day, stocks)
+
     if messages:
         print(colored("\n  🔔 ALERTS:", "yellow"))
         for msg in messages:
@@ -1330,8 +2213,8 @@ def end_of_simulation(portfolio: Portfolio, stocks: Dict[str, Stock], day: int):
 def init_stocks() -> Dict[str, Stock]:
     """Initialize all stocks."""
     stocks = {}
-    for ticker, name, price, vol, drift in STOCK_DEFINITIONS:
-        stocks[ticker] = Stock(ticker=ticker, name=name, price=price, volatility=vol, drift=drift)
+    for ticker, name, price, vol, drift, sector, industry in STOCK_DEFINITIONS:
+        stocks[ticker] = Stock(ticker=ticker, name=name, price=price, volatility=vol, drift=drift, sector=sector, industry=industry)
     return stocks
 
 
@@ -1340,6 +2223,9 @@ def run_simulation():
     stocks = init_stocks()
     portfolio = Portfolio(STARTING_BALANCE)
     day = 1
+
+    PortfolioAnalyzer.SHARED_NEWS.reset()
+    portfolio.record_value(day, stocks)
 
     clear_screen()
     print(colored("\n  ╔══════════════════════════════════════════════════════════╗", "cyan"))
@@ -1575,6 +2461,14 @@ def run_simulation():
             clear_screen()
             print_header(day, portfolio, stocks)
             print_portfolio_detail(portfolio, stocks, day)
+            input("  Press Enter to continue...")
+
+        elif choice == "A":
+            clear_screen()
+            print_header(day, portfolio, stocks)
+            analyzer = PortfolioAnalyzer(portfolio, stocks)
+            analysis = analyzer.analyze(day)
+            print_portfolio_analysis(analysis, day)
             input("  Press Enter to continue...")
 
         elif choice == "T":
